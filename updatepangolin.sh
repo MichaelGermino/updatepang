@@ -29,6 +29,7 @@ set -Eeuo pipefail
 # Optional:
 #   COMPOSE_FILE=/path/to/docker-compose.yml ./update-pangolin.sh
 
+
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -71,10 +72,10 @@ require_cmd mktemp
 [[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
 [[ -d "$CONFIG_DIR" ]] || fail "Config directory not found: $CONFIG_DIR"
 
-IMAGE_LINE="$(grep -E "^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:[^[:space:]]+" "$COMPOSE_FILE" | head -n 1 || true)"
+IMAGE_LINE="$(grep -E "^[[:space:]]*image:[[:space:]]*[\"']?${IMAGE_REPO}:[^[:space:]\"']+[\"']?" "$COMPOSE_FILE" | head -n 1 || true)"
 [[ -n "$IMAGE_LINE" ]] || fail "Could not find image line for ${IMAGE_REPO} in $COMPOSE_FILE"
 
-CURRENT_VERSION="$(printf '%s\n' "$IMAGE_LINE" | sed -E "s|^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:([^[:space:]]+).*$|\1|")"
+CURRENT_VERSION="$(printf '%s\n' "$IMAGE_LINE" | sed -E "s|^[[:space:]]*image:[[:space:]]*[\"']?${IMAGE_REPO}:([^\"'[:space:]]+)[\"']?.*$|\1|")"
 [[ -n "$CURRENT_VERSION" ]] || fail "Could not parse current version from docker-compose.yml"
 
 log "Current version in $COMPOSE_FILE: $CURRENT_VERSION"
@@ -205,20 +206,21 @@ if [[ -n "$RUNNING_IDS" ]]; then
 fi
 
 log "Updating image version in $COMPOSE_FILE"
-TMP_FILE="$(mktemp)"
-awk -v repo="$IMAGE_REPO" -v newver="$SELECTED_VERSION" '
-{
-  if ($0 ~ "^[[:space:]]*image:[[:space:]]*" repo ":") {
-    sub(repo ":[^[:space:]]+", repo ":" newver)
-  }
-  print
-}
-' "$COMPOSE_FILE" > "$TMP_FILE"
 
-mv "$TMP_FILE" "$COMPOSE_FILE"
+CURRENT_IMAGE_REGEX='^[[:space:]]*image:[[:space:]]*["'\'']?fosrl/pangolin:[^"'\''[:space:]]+["'\'']?[[:space:]]*$'
 
-UPDATED_LINE="$(grep -E "^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:[^[:space:]]+" "$COMPOSE_FILE" | head -n 1 || true)"
-[[ "$UPDATED_LINE" == *"${IMAGE_REPO}:${SELECTED_VERSION}"* ]] || fail "Compose file update verification failed."
+if ! grep -Eq "$CURRENT_IMAGE_REGEX" "$COMPOSE_FILE"; then
+  fail "Could not find a valid Pangolin image line to update in $COMPOSE_FILE"
+fi
+
+sed -Ei \
+  's|^([[:space:]]*image:[[:space:]]*["'\'']?fosrl/pangolin:)[^"'\''[:space:]]+(["'\'']?[[:space:]]*)$|\1'"$SELECTED_VERSION"'\2|' \
+  "$COMPOSE_FILE"
+
+UPDATED_LINE="$(grep -E '^[[:space:]]*image:[[:space:]]*["'\'']?fosrl/pangolin:' "$COMPOSE_FILE" | head -n 1 || true)"
+
+[[ -n "$UPDATED_LINE" ]] || fail "Updated image line could not be found after modification."
+[[ "$UPDATED_LINE" == *"fosrl/pangolin:${SELECTED_VERSION}"* ]] || fail "Compose file update verification failed. Found: $UPDATED_LINE"
 
 log "Updated image line:"
 printf '%s\n' "$UPDATED_LINE"
