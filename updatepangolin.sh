@@ -29,6 +29,9 @@ set -Eeuo pipefail
 # Optional:
 #   COMPOSE_FILE=/path/to/docker-compose.yml ./update-pangolin.sh
 
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 CONFIG_DIR="${CONFIG_DIR:-config}"
 BACKUP_DIR="${BACKUP_DIR:-config-backup}"
@@ -68,11 +71,10 @@ require_cmd mktemp
 [[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
 [[ -d "$CONFIG_DIR" ]] || fail "Config directory not found: $CONFIG_DIR"
 
-# Find the image line for fosrl/pangolin and extract version
 IMAGE_LINE="$(grep -E "^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:[^[:space:]]+" "$COMPOSE_FILE" | head -n 1 || true)"
 [[ -n "$IMAGE_LINE" ]] || fail "Could not find image line for ${IMAGE_REPO} in $COMPOSE_FILE"
 
-CURRENT_VERSION="$(printf '%s\n' "$IMAGE_LINE" | sed -E "s/^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:([^[:space:]]+).*$/\1/")"
+CURRENT_VERSION="$(printf '%s\n' "$IMAGE_LINE" | sed -E "s|^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:([^[:space:]]+).*$|\1|")"
 [[ -n "$CURRENT_VERSION" ]] || fail "Could not parse current version from docker-compose.yml"
 
 log "Current version in $COMPOSE_FILE: $CURRENT_VERSION"
@@ -83,7 +85,6 @@ RELEASE_JSON="$(curl -fsSL \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   "$GITHUB_API_URL")"
 
-# Pull release tags, remove drafts/prereleases, strip leading v if present
 mapfile -t ALL_RELEASES < <(
   printf '%s' "$RELEASE_JSON" | jq -r '
     map(select(.draft == false and .prerelease == false))
@@ -93,7 +94,6 @@ mapfile -t ALL_RELEASES < <(
 
 [[ "${#ALL_RELEASES[@]}" -gt 0 ]] || fail "No releases returned from GitHub."
 
-# Find the current version in the release list
 CURRENT_INDEX=-1
 for i in "${!ALL_RELEASES[@]}"; do
   if [[ "${ALL_RELEASES[$i]}" == "$CURRENT_VERSION" ]]; then
@@ -112,7 +112,6 @@ if [[ "$CURRENT_INDEX" -lt 0 ]]; then
   fail "Cannot determine the next versions from the current version."
 fi
 
-# Build next 10 versions after the current one
 NEXT_VERSIONS=()
 for (( i = CURRENT_INDEX - 1; i >= 0 && ${#NEXT_VERSIONS[@]} < 10; i-- )); do
   NEXT_VERSIONS+=("${ALL_RELEASES[$i]}")
@@ -157,22 +156,18 @@ printf 'Continue? [y/N]: '
 read -r CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || fail "Cancelled by user."
 
-# Rebuild config-backup
 log "Deleting existing backup folder: $BACKUP_DIR"
 rm -rf "$BACKUP_DIR"
 
 log "Creating fresh backup: $CONFIG_DIR -> $BACKUP_DIR"
 cp -a "$CONFIG_DIR" "$BACKUP_DIR"
 
-# Backup docker-compose.yml
 log "Backing up $COMPOSE_FILE to $COMPOSE_BACKUP_FILE"
 cp -f "$COMPOSE_FILE" "$COMPOSE_BACKUP_FILE"
 
-# Bring stack down
 log "Running: sudo docker compose down"
 sudo docker compose -f "$COMPOSE_FILE" down
 
-# Wait until compose services are down
 log "Waiting for containers in this compose project to stop..."
 for _ in {1..30}; do
   RUNNING_IDS="$(sudo docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null || true)"
@@ -197,7 +192,6 @@ for _ in {1..30}; do
   sleep 2
 done
 
-# Final check
 RUNNING_IDS="$(sudo docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null || true)"
 if [[ -n "$RUNNING_IDS" ]]; then
   ANY_RUNNING=0
@@ -210,7 +204,6 @@ if [[ -n "$RUNNING_IDS" ]]; then
   [[ "$ANY_RUNNING" -eq 0 ]] || fail "Some compose containers still appear to be running."
 fi
 
-# Update docker-compose.yml
 log "Updating image version in $COMPOSE_FILE"
 TMP_FILE="$(mktemp)"
 awk -v repo="$IMAGE_REPO" -v newver="$SELECTED_VERSION" '
@@ -224,18 +217,15 @@ awk -v repo="$IMAGE_REPO" -v newver="$SELECTED_VERSION" '
 
 mv "$TMP_FILE" "$COMPOSE_FILE"
 
-# Verify replacement
 UPDATED_LINE="$(grep -E "^[[:space:]]*image:[[:space:]]*${IMAGE_REPO}:[^[:space:]]+" "$COMPOSE_FILE" | head -n 1 || true)"
 [[ "$UPDATED_LINE" == *"${IMAGE_REPO}:${SELECTED_VERSION}"* ]] || fail "Compose file update verification failed."
 
 log "Updated image line:"
 printf '%s\n' "$UPDATED_LINE"
 
-# Pull new image
 log "Running: sudo docker compose pull"
 sudo docker compose -f "$COMPOSE_FILE" pull
 
-# Start stack
 log "Running: sudo docker compose up -d"
 sudo docker compose -f "$COMPOSE_FILE" up -d
 
